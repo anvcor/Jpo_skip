@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<style>
+  body { font: 13px/1.5 system-ui, "Microsoft YaHei", sans-serif; width: 290px; margin: 12px; color: #222; }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .sub { color: #777; font-size: 12px; margin-bottom: 8px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0; }
+  td { padding: 2px 0; }
+  td:last-child { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  button { width: 100%; margin-top: 6px; padding: 6px; cursor: pointer; }
+  .hint { color: #777; font-size: 12px; margin-top: 6px; }
+  #msg { color: #1a6; font-size: 12px; min-height: 1.5em; }
+  fieldset { border: 1px solid #ccc; border-radius: 6px; margin: 8px 0; padding: 6px 8px 8px; }
+  legend { font-size: 12px; color: #555; }
+  .row { margin: 4px 0; }
+  input[type=number] { width: 48px; }
+  .big { font-size: 15px; font-weight: 700; }
+  .ok { color: #15803d; }
+  .bad { color: #b91c1c; }
+  details { margin-top: 10px; border-top: 1px solid #e5e5e5; padding-top: 8px; }
+  summary { cursor: pointer; color: #555; font-size: 12px; user-select: none; }
+  .switch { font-size: 14px; font-weight: 600; }
+</style>
+</head>
+<body>
+  <h1>J-PlatPat 验证码助手</h1>
+  <div class="sub" id="modelInfo"></div>
+
+  <fieldset>
+    <legend>验证码</legend>
+    <div class="row"><label class="switch"><input type="checkbox" id="recogOn"> 自动识别并填入</label></div>
+    <div class="row"><label class="switch"><input type="checkbox" id="autoSubmit"> 自动提交</label>
+      <span class="hint">（判错就重新识别，最多 <input type="number" id="maxSubmit" min="1" max="10" value="3"> 次）</span></div>
+    <table>
+      <tr><td>自动识别</td><td id="model_filled">0</td></tr>
+      <tr><td>提交后判对 / 判错</td><td><span class="ok" id="model_ok">0</span> / <span class="bad" id="model_wrong">0</span></td></tr>
+      <tr><td>实测准确率</td><td class="big" id="modelAcc">–</td></tr>
+    </table>
+    <div class="hint">只有你亲手点了下载、弹出来的验证码才会自动提交。</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>PDF 下载</legend>
+    <div class="row"><label class="switch"><input type="checkbox" id="directPdf"> 直接下载文件（不弹查看窗口）</label></div>
+    <div class="row"><label><input type="checkbox" id="autoClick"> 自动点「PDFダウンロード」</label></div>
+    <table><tr><td>已下载 PDF</td><td id="pdf">0</td></tr></table>
+    <div class="hint">保存在：下载目录\J-PlatPat\，文件名如 JP2001-330771A.pdf</div>
+  </fieldset>
+
+  <details id="dev">
+    <summary>开发者选项（收集训练数据）</summary>
+
+    <fieldset>
+      <legend>识别细节</legend>
+      <div class="row">置信度低于 <input type="number" id="minConf" min="0" max="1" step="0.05" value="0.7"> 时：</div>
+      <div class="row"><label><input type="checkbox" id="redrawLow"> 自动换一张（最多 <input type="number" id="maxRedraw" min="0" max="10" value="3"> 次）</label></div>
+      <div class="hint">没把握的结果只填入、不自动提交。</div>
+    </fieldset>
+
+    <fieldset>
+      <legend>收集图片</legend>
+      <label><input type="checkbox" id="enabled"> 保存验证码图片</label>
+      <table>
+        <tr><td>✅ 已验证（ok）</td><td id="ok">0</td></tr>
+        <tr><td>❌ 输错（wrong）</td><td id="wrong">0</td></tr>
+        <tr><td>⬜ 未标注（unlabeled）</td><td id="unlabeled">0</td></tr>
+      </table>
+      <div class="hint">保存在：下载目录\jpp_captcha\</div>
+    </fieldset>
+
+    <fieldset>
+      <legend>自动换图收集（先手动让验证码对话框弹出）</legend>
+      <div class="row">目标 <input type="number" id="target" min="10" max="2000" step="10" value="300"> 张</div>
+      <div class="row">间隔 <input type="number" id="minS" min="1" max="60" step="0.5" value="1"> ～ <input type="number" id="maxS" min="1" max="120" step="0.5" value="1.5"> 秒</div>
+      <div class="row">进度 <b id="progress">0 / 300</b></div>
+      <button id="autoBtn">开始自动换图</button>
+      <div id="stopReason" class="hint"></div>
+    </fieldset>
+
+    <button id="dump">导出当前验证码区域 HTML</button>
+    <button id="reset">计数清零</button>
+  </details>
+  <div id="msg"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

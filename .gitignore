@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+
+# 验证码图片和标注数据不进仓库（默认在 <下载目录>/jpp_captcha/）
+jpp_captcha/
+*.csv
+predictions/
+
+# 训练报告里有本地文件名，按需自己决定是否提交
+models/*_report.txt
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

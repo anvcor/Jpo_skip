@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>验证码标注</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #fff; --ink: #1d2330; --muted: #6b7280; --line: #e3e6eb;
+    --ok: #15803d; --ok-bg: #e8f6ec; --warn: #b45309; --warn-bg: #fdf3e2; --bad: #b91c1c; --bad-bg: #fdecec;
+    --auto: #1d4ed8; --auto-bg: #e8effd; --accent: #2a52be;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 system-ui, "Microsoft YaHei", sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0; }
+  .stat { color: var(--muted); }
+  .stat b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  /* 左右两栏各自滚动：整页不滚，左栏（审核 + 模型）和右栏（图片网格）分别有自己的滚动条 */
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  header { flex: none; }
+  .layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 520px 1fr; gap: 16px; padding: 0 20px; }
+  .side, main { height: 100%; overflow-y: auto; padding: 16px 4px 16px 0; overscroll-behavior: contain; }
+  .side { display: flex; flex-direction: column; gap: 16px; }
+  /* 审核区固定在左栏顶部，下面的模型面板在它后面滚 */
+  #review { position: sticky; top: 0; z-index: 2; box-shadow: 0 6px 12px -8px rgba(0, 0, 0, .25); }
+  @media (max-width: 1100px) {
+    body { overflow: auto; display: block; }
+    .layout { grid-template-columns: 1fr; padding: 16px 20px; }
+    .side, main { height: auto; overflow: visible; padding: 0; }
+  }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  h2 { font-size: 13px; color: var(--muted); font-weight: 600; margin: 0 0 10px; letter-spacing: .02em; }
+
+  /* 审核区 */
+  #bigimg { width: 100%; image-rendering: auto; border: 1px solid #333; background: #ddd; display: block; aspect-ratio: 5 / 1; object-fit: contain; }
+  #meta { margin: 8px 0 4px; color: var(--muted); font-size: 12px; word-break: break-all; }
+  #typedWarn { color: var(--bad); font-size: 13px; min-height: 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+  .chip { border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; cursor: pointer; background: #fafafa; user-select: none; }
+  .chip .t { font: 600 18px Consolas, monospace; letter-spacing: 2px; }
+  .chip .n { font-size: 11px; color: var(--muted); display: block; }
+  .chip.hi { border-color: var(--ok); background: var(--ok-bg); }
+  .chip.mid { border-color: var(--warn); background: var(--warn-bg); }
+  .chip.lo { border-color: var(--bad); background: var(--bad-bg); }
+  .chip.match { outline: 2px solid var(--accent); }
+  .entry { display: flex; gap: 10px; align-items: center; }
+  #inp { font: 600 40px Consolas, monospace; letter-spacing: 8px; width: 210px; text-align: center; padding: 4px 8px; border: 2px solid var(--line); border-radius: 8px; }
+  #inp:focus { outline: none; border-color: var(--accent); }
+  #curLabel { font-size: 13px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  button { font: inherit; padding: 5px 12px; border: 1px solid #c9ced6; background: #fff; border-radius: 6px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; padding: 7px 18px; }
+  button.primary kbd { background: transparent; color: #dfe6fb; border-color: #8ea3e0; }
+  button:disabled { opacity: .5; cursor: default; }
+  kbd { font: 11px Consolas, monospace; border: 1px solid #ccd; border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: #f7f7f9; }
+  #msg { color: var(--bad); min-height: 1.5em; margin-top: 6px; font-size: 13px; }
+  .pos { color: var(--muted); font-size: 12px; }
+
+  /* 模型区 */
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: left; font-variant-numeric: tabular-nums; }
+  th { color: var(--muted); font-weight: 500; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+  select, input[type=number] { font: inherit; padding: 3px 6px; border: 1px solid #c9ced6; border-radius: 6px; background: #fff; }
+  input[type=number] { width: 80px; }
+  progress { width: 160px; }
+  .hint { color: var(--muted); font-size: 12px; }
+
+  /* 网格 */
+  .filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+  .card { background: var(--panel); border: 2px solid var(--line); border-radius: 8px; padding: 6px; cursor: pointer; position: relative; }
+  .card img { width: 100%; display: block; aspect-ratio: 5 / 1; object-fit: contain; background: #ddd; }
+  .card .lab { font: 600 16px Consolas, monospace; letter-spacing: 2px; margin-top: 4px; display: flex; justify-content: space-between; align-items: center; }
+  .card .lab small { font: 11px system-ui, sans-serif; letter-spacing: 0; color: var(--muted); }
+  .card .lab .guess { color: var(--muted); font-weight: 400; font-style: italic; }
+  /* 未标注：虚线框 + 浅黄底，标签显示“未标注”；已标注：实线绿框 + 绿底 + ✓ */
+  .card.s-none { border-style: dashed; border-color: #d9b46a; background: #fffaf0; }
+  .card.s-ok, .card.s-manual { border-color: #6fbf86; background: var(--ok-bg); }
+  .card.s-auto { border-color: #7da0ea; background: var(--auto-bg); }
+  .card.s-skip { opacity: .45; border-style: dotted; }
+  .badge { font: 600 11px system-ui, sans-serif; letter-spacing: 0; padding: 0 6px; border-radius: 9px; }
+  .badge.none { background: #f3dfb4; color: #7a5410; }
+  .badge.ok, .badge.manual { background: #c9ecd3; color: var(--ok); }
+  .badge.auto { background: #cfdcf8; color: var(--auto); }
+  .badge.skip { background: #e5e7eb; color: #555; }
+  .tabs { display: inline-flex; border: 1px solid #c9ced6; border-radius: 8px; overflow: hidden; }
+  .tabs button { border: 0; border-radius: 0; border-right: 1px solid #c9ced6; padding: 5px 12px; }
+  .tabs button:last-child { border-right: 0; }
+  .tabs button.on { background: var(--accent); color: #fff; }
+  .tabs button b { font-variant-numeric: tabular-nums; }
+  .modelpick label { margin-right: 10px; white-space: nowrap; }
+  .sub { color: var(--muted); font-size: 11px; display: block; }
+  .card.cur { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+  .card .sus { position: absolute; top: 4px; right: 6px; color: var(--bad); font-weight: 700; }
+  #more { margin: 14px auto 0; display: block; }
+  .empty { color: var(--muted); padding: 30px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>验证码标注</h1>
+  <span class="stat">共 <b id="sTotal">0</b> 张</span>
+  <span class="stat">可用标注 <b id="sLabeled">0</b>（插件验证 <b id="sOk">0</b> · 人工 <b id="sManual">0</b> · 自动 <b id="sAuto">0</b>）</span>
+  <span class="stat">跳过 <b id="sSkip">0</b></span>
+  <span class="stat hint" id="sDir"></span>
+</header>
+
+<div class="layout">
+  <div class="side">
+    <section class="panel" id="review">
+      <h2>审核 <span class="pos" id="pos"></span></h2>
+      <img id="bigimg" alt="">
+      <div id="meta"></div>
+      <div id="typedWarn"></div>
+      <div class="chips" id="chips"></div>
+      <div class="entry">
+        <input id="inp" maxlength="4" inputmode="numeric" autocomplete="off" placeholder="----">
+        <div id="curLabel"></div>
+      </div>
+      <div class="btns">
+        <button class="primary" id="bSave">✓ 正确，保存 <kbd>Enter</kbd></button>
+        <button id="bSkip">跳过/坏图 <kbd>Esc</kbd></button>
+        <button id="bPrev">上一张 <kbd>PgUp</kbd></button>
+        <button id="bNext">下一张 <kbd>PgDn</kbd></button>
+        <button id="bClear">清除标注</button>
+      </div>
+      <div id="msg"></div>
+      <div class="hint">预测对了就点「正确，保存」；不对就点上面别的模型的结果，或者直接打 4 位数字再保存。右边的小图可以点，点哪张就审核哪张。</div>
+    </section>
+
+    <section class="panel">
+      <h2>模型</h2>
+      <table id="modelTable"></table>
+      <div class="row" id="jobRow" hidden><progress id="jobBar" max="1" value="0"></progress><span id="jobText" class="hint"></span></div>
+      <div class="hint" style="margin-top:6px">准确率 = 拿已人工确认的图对照算的。注意：jpp_cnn 就是用这些图训练的，它在已标注图上的准确率会偏高，真实水平看 jpp_cnn_cv（交叉验证）。</div>
+    </section>
+
+    <section class="panel">
+      <h2>多个模型结果一致 → 批量采用（推荐）</h2>
+      <div class="modelpick" id="agreeModels"></div>
+      <div class="hint" id="agreeStat"></div>
+      <div class="row"><button class="primary" id="bAgree">采用</button></div>
+    </section>
+
+    <section class="panel">
+      <h2>单个模型高置信 → 批量采用</h2>
+      <div class="row" style="margin-top:0">
+        <select id="accModel"></select>
+        置信度 ≥ <input type="number" id="accTh" min="0" max="1" step="0.001" value="0.995">
+        <button id="bAccept">采用</button>
+      </div>
+    </section>
+  </div>
+
+  <main>
+    <div class="filters">
+      <label>文件夹 <select id="fFolder">
+        <option value="">全部</option><option value="unlabeled">unlabeled</option>
+        <option value="wrong">wrong</option><option value="ok">ok</option></select></label>
+      <span class="tabs" id="fStatus">
+        <button data-v="todo" class="on">未标注 <b data-c="todo">0</b></button>
+        <button data-v="labeled">已标注 <b data-c="labeled">0</b></button>
+        <button data-v="auto">其中自动采用 <b data-c="auto">0</b></button>
+        <button data-v="skip">跳过 <b data-c="skip">0</b></button>
+        <button data-v="">全部 <b data-c="all">0</b></button>
+      </span>
+      <label><input type="checkbox" id="fSus"> 只看可疑 <span class="hint">（模型间不一致 / 低置信 / 与标注不符）</span></label>
+      <label>主模型 <select id="fPrimary"></select></label>
+      <label>排序 <select id="fSort">
+        <option value="file">时间</option><option value="conf_asc">置信度 低→高</option><option value="conf_desc">置信度 高→低</option></select></label>
+      <span class="hint" id="qCount"></span>
+    </div>
+    <div class="grid" id="grid"></div>
+    <button id="more" hidden>显示更多</button>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const PAGE = 240;
+let items = [], byFile = new Map(), models = [], queue = [], cur = 0, shown = 0, confirmKey = null, pollTimer = null;
+let status = 'todo';          // 当前状态页签
+let agreePicked = null;       // “多模型一致”勾选的模型（null = 用默认）
+let lastState = null, evalTimer = null;
+const SOURCE_TEXT = { ok: '插件验证', manual: '人工', auto: '自动采用', skip: '跳过' };
+
+const api = {
+  get: (u) => fetch(u).then((r) => r.json()),
+  post: (u, body) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json()),
+};
+const primary = () => $('fPrimary').value;
+// 各模型置信度刻度不同：按模型自己的“高置信”门槛来上色
+const confClass = (c, th = 0.99) => (c >= th ? 'hi' : c >= th - 0.09 ? 'mid' : 'lo');
+const imgUrl = (f) => '/img/' + f.split('/').map(encodeURIComponent).join('/');
+
+function isSuspicious(it) {
+  const texts = Object.values(it.preds).map((p) => p[0]);
+  if (it.label) return texts.some((t) => t !== it.label);
+  if (it.source === 'skip') return false;
+  const p = it.preds[primary()];
+  return !p || p[1] < 0.99 || new Set(texts).size > 1 || (it.typed && p[0] === it.typed);
+}
+
+// ---------- 加载 ----------
+async function loadState() {
+  const s = await api.get('/api/state');
+  $('sTotal').textContent = s.total;
+  $('sLabeled').textContent = s.labeled;
+  $('sOk').textContent = s.by_source.ok;
+  $('sManual').textContent = s.by_source.manual;
+  $('sAuto').textContent = s.by_source.auto;
+  $('sSkip').textContent = s.skipped;
+  $('sDir').textContent = s.dir;
+  models = s.models;
+  lastState = s;
+  renderJob(s.job);
+  return s;
+}
+
+async function loadAll(keepPos = false) {
+  const s = await loadState();
+  const [its, ev] = await Promise.all([api.get('/api/items'), api.get('/api/eval')]);
+  items = its;
+  byFile = new Map(items.map((it) => [it.file, it]));
+  for (const sel of [$('fPrimary'), $('accModel')]) {
+    const v = sel.value;
+    sel.innerHTML = models.map((m) => `<option>${m.name}</option>`).join('');
+    if (v && models.some((m) => m.name === v)) sel.value = v;
+  }
+  renderModels(s, ev);
+  renderAgree();
+  applyFilter(keepPos);
+}
+
+// 保存后过一会儿刷新准确率（连续保存时只刷一次）
+function refreshEvalSoon() {
+  clearTimeout(evalTimer);
+  evalTimer = setTimeout(async () => {
+    const [s, ev] = await Promise.all([loadState(), api.get('/api/eval')]);
+    renderModels(s, ev);
+    renderAgree();
+  }, 1500);
+}
+
+// ---------- 模型面板 ----------
+function renderModels(s, ev) {
+  const evBy = Object.fromEntries(ev.map((e) => [e.name, e]));
+  const pct = (x) => (x == null ? '–' : (x * 100).toFixed(1) + '%');
+  const head = '<tr><th>模型</th><th>已预测</th><th>准确率</th><th>高置信 覆盖 / 准确</th><th></th></tr>';
+  const rows = s.models.map((m) => {
+    const e = evBy[m.name] || { n: 0 };
+    const b = (th) => { const x = e.buckets?.find((b) => b.th === th); return x ? `${pct(x.coverage)} / ${pct(x.acc)}` : '–'; };
+    const missing = s.total - m.predicted;
+    const btn = !m.runnable ? '<span class="hint">只读</span>'
+      : `<button data-run="${m.name}" ${missing ? '' : 'data-redo="1"'}>${missing ? `预测 ${missing} 张` : '重新预测'}</button>`;
+    return `<tr><td><b>${m.name}</b><span class="sub">${m.info || ''}</span></td><td>${m.predicted}/${s.total}</td>
+      <td>${e.n ? pct(e.acc) + ` <span class="hint">(${e.n})</span>` : '–'}</td>
+      <td>${b(m.conf_th ?? 0.99)}<span class="sub">置信度 ≥ ${m.conf_th ?? 0.99}</span></td><td>${btn}</td></tr>`;
+  }).join('');
+  $('modelTable').innerHTML = models.length ? head + rows
+    : '<tr><td class="hint">没有可用模型。安装 ddddocr，或把 .onnx 模型放进 models/ 文件夹。</td></tr>';
+  $('modelTable').querySelectorAll('button[data-run]').forEach((b) => b.onclick = () => runModel(b.dataset.run, !!b.dataset.redo));
+}
+
+async function runModel(name, redo) {
+  if (redo && !confirm(`重新预测 ${name} 的全部图片？`)) return;
+  const r = await api.post('/api/run', { model: name, redo });
+  if (r.error) return alert(r.error);
+  poll();
+}
+
+function renderJob(job) {
+  $('jobRow').hidden = !job.running && !job.error;
+  $('jobBar').max = job.total || 1;
+  $('jobBar').value = job.done;
+  $('jobText').textContent = job.error ? `出错：${job.error}` : `${job.model} 预测中 ${job.done} / ${job.total}`;
+  document.querySelectorAll('button[data-run]').forEach((b) => b.disabled = job.running);
+}
+
+function poll() {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    const s = await loadState();
+    if (!s.job.running) { clearInterval(pollTimer); loadAll(true); }
+  }, 800);
+}
+
+// ---------- 多模型一致 → 批量采用 ----------
+const runnableModels = () => models.filter((m) => m.runnable).map((m) => m.name);
+
+function pickedAgree() {
+  const avail = runnableModels();
+  if (agreePicked) return agreePicked.filter((n) => avail.includes(n));
+  // 默认：自己训练的模型 + ddddocr
+  const def = avail.filter((n) => n === 'ddddocr' || n.startsWith('jpp_cnn'));
+  return def.length >= 2 ? def : avail.slice(0, 2);
+}
+
+function agreeCandidates(names) {
+  return items.filter((it) => {
+    if (it.source != null) return false;
+    const t = new Set(names.map((n) => it.preds[n]?.[0]));
+    if (t.size !== 1) return false;
+    const v = [...t][0];
+    return v && /^\d{4}$/.test(v) && v !== it.typed;
+  });
+}
+
+function renderAgree() {
+  const avail = runnableModels(), picked = pickedAgree();
+  $('agreeModels').innerHTML = avail.map((n) =>
+    `<label><input type="checkbox" value="${n}" ${picked.includes(n) ? 'checked' : ''}> ${n}</label>`).join('')
+    || '<span class="hint">没有可用模型</span>';
+  $('agreeModels').querySelectorAll('input').forEach((c) => c.onchange = () => {
+    agreePicked = [...$('agreeModels').querySelectorAll('input:checked')].map((x) => x.value);
+    renderAgree();
+  });
+  if (picked.length < 2) { $('agreeStat').textContent = '至少勾选两个模型。'; $('bAgree').disabled = true; return; }
+
+  const missing = picked.filter((n) => items.some((it) => it.source == null && !it.preds[n]));
+  const cand = agreeCandidates(picked).length;
+  const todo = items.filter((it) => it.source == null).length;
+  // 可靠性：在已人工确认的图上，这几个模型一致时有多少是对的。
+  // 自己训练的模型在训练图上会虚高，有交叉验证结果（xxx_cv）就用它代替。
+  const evalName = (n) => (models.some((m) => m.name === n + '_cv') ? n + '_cv' : n);
+  let agree = 0, right = 0;
+  for (const it of items) {
+    if (!(it.source === 'ok' || it.source === 'manual') || !it.label) continue;
+    const t = new Set(picked.map((n) => it.preds[evalName(n)]?.[0]));
+    if (t.size === 1 && [...t][0]) { agree++; if ([...t][0] === it.label) right++; }
+  }
+  const usedCv = picked.some((n) => evalName(n) !== n);
+  $('agreeStat').innerHTML =
+    `未标注 ${todo} 张里，${picked.join(' 和 ')} 结果一致的有 <b>${cand}</b> 张。` +
+    (missing.length ? `<br>⚠ ${missing.join('、')} 还有未标注的图没预测，先点上面的「预测」。` : '') +
+    (agree ? `<br>参考：在已人工确认的图上，它们一致时 ${right}/${agree} = <b>${(100 * right / agree).toFixed(1)}%</b> 是对的` +
+      (usedCv ? '（自己训练的模型用的是交叉验证结果）' : '') + '。' : '');
+  $('bAgree').disabled = !cand;
+}
+
+$('bAgree').onclick = async () => {
+  const names = pickedAgree(), n = agreeCandidates(names).length;
+  if (!n) return;
+  if (!confirm(`把 ${names.join(' 和 ')} 结果一致的 ${n} 张未标注图片直接采用？\n（来源记为“自动采用”，之后可以在「其中自动采用」页签里复查）`)) return;
+  const r = await api.post('/api/accept', { mode: 'agree', models: names });
+  if (r.error) return alert(r.error);
+  await loadAll(true);
+  alert(`已采用 ${r.n} 张。剩下不一致的，在「未标注」页签里逐张确认。`);
+};
+
+$('bAccept').onclick = async () => {
+  const name = $('accModel').value, th = Number($('accTh').value);
+  const n = items.filter((it) => {
+    const p = it.preds[name];
+    return it.source == null && p && p[1] >= th && /^\d{4}$/.test(p[0]) && p[0] !== it.typed;
+  }).length;
+  if (!n) return alert('没有符合条件的未标注图片');
+  if (!confirm(`用 ${name} 的预测，自动采用 ${n} 张置信度 ≥ ${th} 的未标注图片？\n（来源记为“自动采用”，之后可以在「其中自动采用」页签里复查）`)) return;
+  const r = await api.post('/api/accept', { model: name, threshold: th });
+  await loadAll(true);
+  alert(`已采用 ${r.n} 张`);
+};
+
+// ---------- 筛选与网格 ----------
+function applyFilter(keepPos = false) {
+  const keepFile = keepPos ? queue[cur] : null;
+  const folder = $('fFolder').value, sus = $('fSus').checked, pm = primary();
+  updateTabCounts();
+  queue = items.filter((it) => {
+    if (folder && it.folder !== folder) return false;
+    if (status === 'todo' && it.source != null) return false;
+    if (status === 'labeled' && !it.label) return false;
+    if (status === 'auto' && it.source !== 'auto') return false;
+    if (status === 'skip' && it.source !== 'skip') return false;
+    if (sus && !isSuspicious(it)) return false;
+    return true;
+  }).map((it) => it.file);
+  const conf = (f) => byFile.get(f).preds[pm]?.[1] ?? -1;
+  if ($('fSort').value === 'conf_asc') queue.sort((a, b) => conf(a) - conf(b));
+  if ($('fSort').value === 'conf_desc') queue.sort((a, b) => conf(b) - conf(a));
+  cur = keepFile && queue.includes(keepFile) ? queue.indexOf(keepFile) : 0;
+  $('qCount').textContent = `${queue.length} 张`;
+  shown = 0;
+  $('grid').innerHTML = queue.length ? '' : '<div class="empty">没有符合条件的图片</div>';
+  renderMore();
+  show();
+}
+
+function updateTabCounts() {
+  const folder = $('fFolder').value;
+  const inFolder = items.filter((it) => !folder || it.folder === folder);
+  const c = {
+    todo: inFolder.filter((it) => it.source == null).length,
+    labeled: inFolder.filter((it) => it.label).length,
+    auto: inFolder.filter((it) => it.source === 'auto').length,
+    skip: inFolder.filter((it) => it.source === 'skip').length,
+    all: inFolder.length,
+  };
+  document.querySelectorAll('#fStatus b[data-c]').forEach((b) => b.textContent = c[b.dataset.c]);
+  document.querySelectorAll('#fStatus button').forEach((b) => b.classList.toggle('on', b.dataset.v === status));
+}
+
+function cardHtml(f) {
+  const it = byFile.get(f);
+  const p = it.preds[primary()];
+  const lab = it.label
+    ? `<span>✓ ${it.label}</span> <span class="badge ${it.source}">${SOURCE_TEXT[it.source] || it.source}</span>`
+    : it.source === 'skip' ? '<span></span> <span class="badge skip">跳过</span>'
+    : `<span class="guess">${p ? p[0] || '?' : '?'}</span> <span class="badge none">未标注</span>`;
+  return `<img loading="lazy" src="${imgUrl(f)}" alt=""><div class="lab">${lab}</div>${isSuspicious(it) ? '<span class="sus">!</span>' : ''}`;
+}
+
+function cardClass(f) {
+  const it = byFile.get(f);
+  return 'card s-' + (it.source || 'none') + (queue[cur] === f ? ' cur' : '');
+}
+
+function renderMore() {
+  const grid = $('grid'), frag = document.createDocumentFragment();
+  for (const f of queue.slice(shown, shown + PAGE)) {
+    const d = document.createElement('div');
+    d.className = cardClass(f);
+    d.dataset.f = f;
+    d.innerHTML = cardHtml(f);
+    d.onclick = () => { cur = queue.indexOf(f); show(); };
+    frag.appendChild(d);
+  }
+  grid.appendChild(frag);
+  shown = Math.min(queue.length, shown + PAGE);
+  $('more').hidden = shown >= queue.length;
+}
+$('more').onclick = renderMore;
+
+function refreshCard(f) {
+  const d = $('grid').querySelector(`.card[data-f="${CSS.escape(f)}"]`);
+  if (d) { d.className = cardClass(f); d.innerHTML = cardHtml(f); }
+}
+
+// ---------- 审核 ----------
+function show() {
+  const f = queue[cur];
+  $('grid').querySelectorAll('.card.cur').forEach((d) => d.classList.remove('cur'));
+  $('msg').textContent = '';
+  confirmKey = null;
+  if (!f) {
+    $('bigimg').removeAttribute('src');
+    $('meta').textContent = '';
+    $('typedWarn').textContent = '';
+    $('chips').innerHTML = '';
+    $('curLabel').textContent = '';
+    $('inp').value = '';
+    $('pos').textContent = '';
+    return;
+  }
+  const it = byFile.get(f);
+  while (cur >= shown && shown < queue.length) renderMore();
+  const card = $('grid').querySelector(`.card[data-f="${CSS.escape(f)}"]`);
+  if (card) { card.classList.add('cur'); card.scrollIntoView({ block: 'nearest' }); }
+
+  $('pos').textContent = `${cur + 1} / ${queue.length}`;
+  $('bigimg').src = imgUrl(f);
+  $('meta').textContent = f;
+  $('typedWarn').textContent = it.typed ? `⚠ 当时输入了 ${it.typed}，那是错误答案` : '';
+  $('curLabel').innerHTML = it.label ? `当前标注 <b>${it.label}</b> <span class="hint">(${it.source})</span>`
+    : it.source === 'skip' ? '<span class="hint">已跳过</span>' : '<span class="hint">未标注</span>';
+
+  const p = it.preds[primary()];
+  $('inp').value = it.label || (p && /^\d{4}$/.test(p[0]) ? p[0] : '');
+  renderChips();
+  $('inp').focus();
+  $('inp').select();
+}
+
+function renderChips() {
+  const it = byFile.get(queue[cur]);
+  if (!it) return;
+  const v = $('inp').value;
+  $('chips').innerHTML = models.map((m, i) => {
+    const p = it.preds[m.name];
+    if (!p) return `<span class="chip"><span class="t">····</span><span class="n">${i + 1}. ${m.name} 未预测</span></span>`;
+    const wrongHit = it.typed && p[0] === it.typed;
+    return `<span class="chip ${wrongHit ? 'lo' : confClass(p[1], m.conf_th)} ${p[0] === v ? 'match' : ''}" data-t="${p[0]}">
+      <span class="t">${p[0] || '∅'}</span><span class="n">${i + 1}. ${m.name} · ${p[1].toFixed(3)}</span></span>`;
+  }).join('');
+  $('chips').querySelectorAll('.chip[data-t]').forEach((c) => c.onclick = () => adopt(c.dataset.t));
+}
+
+function adopt(t) {
+  $('inp').value = t;
+  renderChips();
+  $('inp').focus();
+}
+
+async function setLabel(label, source) {
+  const f = queue[cur];
+  if (!f) return;
+  const r = await api.post('/api/label', { file: f, label, source });
+  if (r.error) { $('msg').textContent = r.error; return; }
+  const it = byFile.get(f);
+  it.label = source === 'clear' ? null : label || null;
+  it.source = source === 'clear' ? null : source;
+  refreshCard(f);
+  updateTabCounts();
+  refreshEvalSoon();
+}
+
+let busy = false; // 保存请求进行中时忽略重复触发
+async function save() {
+  const f = queue[cur], v = $('inp').value.trim();
+  if (!f || busy) return;
+  if (!/^\d{4}$/.test(v)) { $('msg').textContent = '需要正好 4 位数字'; return; }
+  const it = byFile.get(f);
+  if (it.typed === v && confirmKey !== f + v) {
+    confirmKey = f + v;
+    $('msg').textContent = `${v} 是当时被判错的输入，确定吗？再按一次 Enter 确认`;
+    return;
+  }
+  busy = true;
+  try { await setLabel(v, 'manual'); next(); } finally { busy = false; }
+}
+async function skip() {
+  if (!queue[cur] || busy) return;
+  busy = true;
+  try { await setLabel('', 'skip'); next(); } finally { busy = false; }
+}
+async function clearLabel() { await setLabel('', 'clear'); show(); }
+function next() { if (cur < queue.length - 1) cur++; else $('msg').textContent = '已经是最后一张'; show(); }
+function prev() { if (cur > 0) { cur--; show(); } }
+
+$('bSave').onclick = save;
+$('bSkip').onclick = skip;
+$('bNext').onclick = next;
+$('bPrev').onclick = prev;
+$('bClear').onclick = clearLabel;
+$('inp').addEventListener('input', () => { $('inp').value = $('inp').value.replace(/\D/g, ''); renderChips(); });
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON' || e.target.type === 'number') return;
+  if (e.repeat && (e.key === 'Enter' || e.key === 'Escape')) { e.preventDefault(); return; } // 按住不放只算一次
+  if (e.key === 'Enter') { e.preventDefault(); save(); }
+  else if (e.key === 'Escape') { e.preventDefault(); skip(); }
+  else if (e.key === 'PageDown' || (e.altKey && e.key === 'ArrowRight')) { e.preventDefault(); next(); }
+  else if (e.key === 'PageUp' || (e.altKey && e.key === 'ArrowLeft')) { e.preventDefault(); prev(); }
+  else if (e.ctrlKey && /^[1-9]$/.test(e.key)) {
+    const m = models[Number(e.key) - 1], it = byFile.get(queue[cur]);
+    if (m && it?.preds[m.name]) { e.preventDefault(); adopt(it.preds[m.name][0]); }
+  }
+});
+
+for (const id of ['fFolder', 'fSus', 'fSort']) $(id).addEventListener('change', () => applyFilter());
+document.querySelectorAll('#fStatus button').forEach((b) => b.onclick = () => { status = b.dataset.v; applyFilter(); });
+$('fPrimary').addEventListener('change', () => applyFilter(true));
+
+loadAll();
+</script>
+</body>
+</html>

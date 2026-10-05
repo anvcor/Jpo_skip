@@ -1,0 +1,104 @@
+{
+ "name": "jpp_cnn",
+ "height": 48,
+ "width": 240,
+ "crop": 1,
+ "mean": 0.5,
+ "std": 0.5,
+ "length": 4,
+ "classes": 10,
+ "charset": "0123456789",
+ "resize": "pil_bilinear",
+ "grayscale": "pil_L",
+ "floats": 963784,
+ "layers": [
+  {
+   "type": "conv3x3_relu",
+   "in": 1,
+   "out": 32,
+   "w": 0,
+   "b": 288
+  },
+  {
+   "type": "conv3x3_relu",
+   "in": 32,
+   "out": 32,
+   "w": 320,
+   "b": 9536
+  },
+  {
+   "type": "maxpool2"
+  },
+  {
+   "type": "conv3x3_relu",
+   "in": 32,
+   "out": 64,
+   "w": 9568,
+   "b": 28000
+  },
+  {
+   "type": "conv3x3_relu",
+   "in": 64,
+   "out": 64,
+   "w": 28064,
+   "b": 64928
+  },
+  {
+   "type": "maxpool2"
+  },
+  {
+   "type": "conv3x3_relu",
+   "in": 64,
+   "out": 96,
+   "w": 64992,
+   "b": 120288
+  },
+  {
+   "type": "conv3x3_relu",
+   "in": 96,
+   "out": 96,
+   "w": 120384,
+   "b": 203328
+  },
+  {
+   "type": "maxpool2"
+  },
+  {
+   "type": "conv3x3_relu",
+   "in": 96,
+   "out": 128,
+   "w": 203424,
+   "b": 314016
+  },
+  {
+   "type": "conv3x3_relu",
+   "in": 128,
+   "out": 128,
+   "w": 314144,
+   "b": 461600
+  },
+  {
+   "type": "maxpool2"
+  },
+  {
+   "type": "avgpool_rows"
+  },
+  {
+   "type": "fc_relu",
+   "in": 1920,
+   "out": 256,
+   "w": 461728,
+   "b": 953248
+  },
+  {
+   "type": "fc",
+   "in": 256,
+   "out": 40,
+   "w": 953504,
+   "b": 963744
+  }
+ ],
+ "exported_at": "2026-10-05 21:41",
+ "trained_at": "2026-10-05 21:12",
+ "samples": 3031
+}

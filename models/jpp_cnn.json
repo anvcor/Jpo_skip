@@ -1,0 +1,13 @@
+{
+ "type": "multihead",
+ "height": 48,
+ "width": 240,
+ "channels": 1,
+ "crop": 1,
+ "mean": 0.5,
+ "std": 0.5,
+ "charset": "0123456789",
+ "length": 4,
+ "samples": 3031,
+ "trained_at": "2026-10-05 21:12"
+}
