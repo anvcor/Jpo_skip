@@ -30,7 +30,34 @@ const CFG = {
   stuckLimit: 3,          // 连续失败几次就判断被限流，自动停止
 };
 
-const LOG = (...a) => console.log('[jpp-captcha]', ...a);
+// 日志带时间和前台/后台，方便看标签页在后台时每一步花了多久
+const ts = () => {
+  const d = new Date(), p = (n, w = 2) => String(n).padStart(w, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+};
+const LOG = (...a) => console.log(`[jpp-captcha] ${ts()} ${document.hidden ? '后台' : '前台'}`, ...a);
+document.addEventListener('visibilitychange', () => LOG(document.hidden ? '页面切到后台' : '页面回到前台'));
+
+// ---------------- 后台标签页 ----------------
+// Chrome 会给后台标签页的 setTimeout / setInterval 降速：最多每秒一次，后台待满 5 分钟后最多每分钟一次。
+// 所以插件的每一步都不能靠计时器推进：
+//   检查页面 → MutationObserver 和图片 load 事件（页面一变就触发，不是计时器）
+//   “稍后执行” → 前台照常等一下；后台用 MessageChannel 消息代替（不受计时器降速影响）
+
+// 下一个任务再执行，相当于 setTimeout(fn, 0) 但不经过计时器
+function nextTask() {
+  return new Promise((r) => {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => { ch.port1.close(); r(); };
+    ch.port2.postMessage(null);
+  });
+}
+
+// 前台：等 ms 再执行（让页面处理完，也让你看清填了什么）；后台：没人看，下一个任务就执行
+function later(ms, fn) {
+  if (document.hidden) nextTask().then(fn);
+  else setTimeout(fn, ms);
+}
 
 const state = {
   enabled: true,
@@ -197,7 +224,7 @@ function ensureModel() {
 }
 
 // 本对话框里模型最近一次的识别结果
-const fill = { hash: null, text: null, conf: 0, redraws: 0, busy: false };
+const fill = { hash: null, text: null, conf: 0, redraws: 0, busy: false, queued: null };
 
 // ---------------- 自动提交 ----------------
 // 验证码一出现就自动点 OK（置信度够、输入框里正是模型的答案时）。每个对话框最多自动提交 maxSubmit 次，
@@ -225,13 +252,13 @@ function autoSubmit(cap, h, p, info) {
   const ok = cap.container.querySelector(CFG.okSelector);
   if (!ok || cap.input?.value !== p.text) return false;
   showBadge(cap, `🤖 ${info}，自动提交（第 ${session.submits + 1} 次）`, '#15803d');
-  // 稍等一下再点：让页面处理完输入事件，你也能看到填了什么
-  setTimeout(() => {
+  // 前台稍等一下再点：让页面处理完输入事件，你也能看到填了什么；后台马上点
+  later(CFG.autoSubmitDelayMs + Math.random() * 300, () => {
     if (state.hash !== h || cap.input?.value !== p.text || !document.contains(ok)) return;
     session.submits += 1;
     LOG(`自动提交 ${p.text}（第 ${session.submits} 次）`);
     ok.click();   // 会经过 bind() 里的点击监听 → onSubmit()，照常记录结果
-  }, CFG.autoSubmitDelayMs + Math.random() * 300);
+  });
   return true;
 }
 
@@ -267,11 +294,11 @@ function showBadge(cap, html, color) {
 
 // afterWrong：上一张刚被判错，输入框里留的是旧答案，可以直接覆盖
 async function recognize(cap, h, afterWrong = false) {
-  if (fill.busy) return;
+  if (fill.busy) { fill.queued = { cap, h, afterWrong }; return; }   // 正在识别上一张：识别完再接着认这张
   fill.busy = true;
   try {
     await ensureModel();
-    await new Promise((r) => setTimeout(r, 0));          // 先让页面把新图画出来
+    await nextTask();                                      // 先让页面把新图画出来
     if (state.hash !== h) return;                          // 识别前图片又换了
     const p = JppModel.predict(imageDataOf(cap.img).data, cap.img.naturalWidth, cap.img.naturalHeight);
     if (state.hash !== h) return;
@@ -309,6 +336,9 @@ async function recognize(cap, h, afterWrong = false) {
     LOG('识别失败', e);
   } finally {
     fill.busy = false;
+    const q = fill.queued;
+    fill.queued = null;
+    if (q && q.h === state.hash) recognize(q.cap, q.h, q.afterWrong);
   }
 }
 
@@ -378,7 +408,7 @@ function autoContinuePdf() {
   if (!btn) return;                      // 按钮还没渲染出来，下一轮再看
   dlg.dataset.jppClicked = '1';
   LOG('自动点「継続」');
-  setTimeout(() => btn.click(), 150);   // 等对话框动画结束
+  later(150, () => btn.click());        // 前台等对话框动画结束；后台马上点
 }
 
 // 「PDFダウンロード」出现时自动点；每个按钮只点一次
@@ -408,6 +438,7 @@ function tick() {
     if (state.hash) {
       // 验证码区域消失：提交过 → 通过；没提交过（直接关掉）→ 未标注
       const s = recentSubmit();
+      LOG(s ? `验证码通过（${s.value}），对话框已关闭` : '验证码对话框已关闭（没有提交）');
       if (s) send({ type: 'resolve', hash: state.hash, result: 'ok' });
       else send({ type: 'save', hash: state.hash, dataUrl: state.dataUrl, kind: 'unlabeled' });
       state.hash = state.dataUrl = state.submitted = null;
@@ -438,7 +469,14 @@ function tick() {
   if (recog.on && !auto.on && cap.img.tagName === 'IMG') recognize(cap, h, afterWrong);
 }
 
-setInterval(tick, CFG.pollMs);
+// 页面一有变化就检查一次：MutationObserver 和图片 load 事件都不是计时器，标签页在后台也会立即触发。
+// 定时检查只做兜底，以及“自动换图收集”的节奏（收集本来就要求窗口可见）。
+const check = () => { try { tick(); } catch (e) { LOG('检查页面出错', e); } };
+new MutationObserver(check).observe(document.documentElement, {
+  childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'class', 'style', 'hidden'],
+});
+document.addEventListener('load', (e) => { if (e.target instanceof HTMLImageElement) check(); }, true);   // 验证码图片加载完
+setInterval(check, CFG.pollMs);
 
 // popup 的“导出验证码区域 HTML”
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
