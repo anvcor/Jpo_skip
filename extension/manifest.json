@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "J-PlatPat 验证码助手",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "J-PlatPat 验证码自动识别、自动提交，PDF 直接下载到本地（不弹查看器窗口）。模型在本地运行，不联网。",
   "permissions": ["downloads", "storage"],
   "host_permissions": ["https://*.j-platpat.inpit.go.jp/*"],

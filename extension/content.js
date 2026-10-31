@@ -1,7 +1,8 @@
 // J-PlatPat 验证码助手 —— 内容脚本
 //   识别：验证码出现后，用本地模型（model.js，纯 JS）识别并填进输入框；置信度低就换一张。
-//   自动提交：只有你亲手操作后弹出的验证码才会自动点 OK（本页的操作，或点开本页的那一下），判错就重新识别再提交，每个对话框最多 3 次。
-//   PDF：「PDFダウンロード」出现时自动点；查看器窗口由 page_hook.js 拦下，改成直接下载文件。
+//   自动提交：验证码一出现就识别并自动点 OK，判错就重新识别再提交，每个对话框最多 3 次。
+//   PDF：确认框自动点「継続」，「PDFダウンロード」出现时自动点；查看器窗口由 page_hook.js 拦下，改成直接下载文件。
+//   插件自己从不点「文献単位PDF」或翻页，整条链路由你那一下点击开始。
 //   收集：记录你提交的值和结果（通过 / 输错），交给 background 保存图片并统计模型的实测准确率。
 //   可选“自动换图”：对话框已打开时，按随机间隔点“再描画”收集训练图片，到目标数量自动停止。
 
@@ -19,14 +20,11 @@ const CFG = {
   nonSubmitText: /再描画|再表示|音声|更新|リロード|redraw|refresh|audio|重新|音频/i,
   redrawSelector: '#repaint_button',
   okSelector: 'button.left',
-  userActionWindowMs: 15000,  // 对话框出现前这么久之内有你的真实操作，才算“你触发的”，才会自动提交
   autoSubmitDelayMs: 400,
   pdfLinkSelector: 'a#pdfDownloadLink',
   // 点「文献単位PDF」后弹出的确认框：「文献単位PDFの出力には、数分かかる場合があります。」[継続] [キャンセル]
   pdfConfirmSelector: 'pdf-abstract-dialog',
   pdfContinueSelector: '.buttonArea button',   // 第一个按钮是「継続」
-  pdfClickWindowMs: 90000,    // 兜底：你最近 90 秒内操作过，出现的「PDFダウンロード」也自动点
-  pdfFlowMs: 10 * 60000,      // 由你发起的一次 PDF 下载（含过验证码、服务器生成 PDF 可能要几分钟），10 分钟内都算
   minRedrawGapMs: 1000,   // 自动换图最短间隔，popup 里填更小的值也按这个算
   redrawTimeoutMs: 5000,  // 点“再描画”后这么久新图还没出来，算一次失败（换图本身约 0.8 秒）
   stuckLimit: 3,          // 连续失败几次就判断被限流，自动停止
@@ -53,7 +51,7 @@ const recog = { on: true, minConf: 0.7, redrawLowConf: true, maxRedraw: 3, autoS
 
 // PDF 下载设置
 //   directPdf：不弹 J-PlatPat 的 PDF 查看器窗口，直接下载文件（拦截由 page_hook.js 在页面环境里完成）
-//   autoClick：「PDFダウンロード」按钮出现时自动点（只在你刚亲手操作过之后）
+//   autoClick：确认框自动点「継続」，「PDFダウンロード」按钮出现时自动点
 const dl = { directPdf: true, autoClick: true };
 const applyDl = () => { document.documentElement.dataset.jppDirectPdf = dl.directPdf ? '1' : '0'; };
 
@@ -202,66 +200,24 @@ function ensureModel() {
 const fill = { hash: null, text: null, conf: 0, redraws: 0, busy: false };
 
 // ---------------- 自动提交 ----------------
-// 只有“你亲手操作”之后弹出的验证码才会自动点 OK：对话框出现前 15 秒内要有真实的鼠标/键盘操作（isTrusted）。
-// 每个对话框最多自动提交 maxSubmit 次；插件自己从不点下载按钮。这样它只是省掉你输入和点 OK，没法被拿去挂脚本批量下载。
-//
-// 你的操作记两份：
-//   lastUserAction   本页面里的
-//   sharedUserAction 所有 J-PlatPat 页面共用（chrome.storage.local），只取“打开本页之前”的那一次。
-//                    在列表页点开文献（新标签页）、刷新、整页跳转后，新页面自己没有记录，验证码又是一打开就弹，
-//                    靠它才能认出是你触发的。本页打开之后别的标签页里的操作不算。
-const PAGE_START = performance.timeOrigin;   // 本页面开始加载的时间
-let lastUserAction = 0;
-let sharedUserAction = 0;
-let lastSharedWrite = 0;
-for (const t of ['click', 'keydown']) {
-  document.addEventListener(t, (e) => {
-    if (!e.isTrusted) return;
-    const now = Date.now();
-    lastUserAction = now;
-    if (now - lastSharedWrite >= 1000) {     // 最多每秒写一次
-      lastSharedWrite = now;
-      try { chrome.storage.local.set({ lastUserAction: now }); } catch { /* 扩展已重新加载 */ }
-    }
-  }, true);
-}
-const takeShared = (t) => { if (t && t <= PAGE_START && t > sharedUserAction) sharedUserAction = t; };
-chrome.storage.local.get({ lastUserAction: 0 }, (v) => takeShared(v.lastUserAction));
-chrome.storage.onChanged.addListener((c) => { if (c.lastUserAction) takeShared(c.lastUserAction.newValue); });
-
-// ms 之内有没有你的操作：'page' 本页里的，'before' 打开本页之前的，null 没有
-function userActedWithin(ms) {
-  const now = Date.now();
-  if (now - lastUserAction < ms) return 'page';
-  if (now - sharedUserAction < ms) return 'before';
-  return null;
-}
-
-const session = { active: false, byUser: false, submits: 0 };  // 当前这个验证码对话框
+// 验证码一出现就自动点 OK（置信度够、输入框里正是模型的答案时）。每个对话框最多自动提交 maxSubmit 次，
+// 都没过就停下等你。自动换图收集期间不提交。
+const session = { active: false, submits: 0 };  // 当前这个验证码对话框
 
 function startSessionIfNeeded() {
   if (session.active) return;
   session.active = true;
-  const by = userActedWithin(CFG.userActionWindowMs);
-  session.byUser = !!by;
   session.submits = 0;
-  LOG(by === 'page' ? '验证码对话框出现（由你在本页的操作触发，可以自动提交）'
-    : by === 'before' ? '验证码对话框出现（由你打开本页的操作触发，可以自动提交）'
-    : '验证码对话框出现（15 秒内没有你的操作，只填入不提交）');
+  LOG('验证码对话框出现');
 }
 
 function endSession() {
   session.active = false;
-  session.byUser = false;
   session.submits = 0;
 }
 
 function autoSubmit(cap, h, p, info) {
   if (!recog.autoSubmit || auto.on) return false;
-  if (!session.byUser) {
-    showBadge(cap, `🤖 ${info}，确认无误后点 OK<br><span style="color:#777">15 秒内没检测到你的操作，所以没有自动提交</span>`, '#15803d');
-    return true;
-  }
   if (session.submits >= recog.maxSubmit) {
     showBadge(cap, `🤖 ${info}，<b>已自动提交 ${session.submits} 次仍未通过，请自己核对后点 OK</b>`, '#b91c1c');
     return true;
@@ -413,40 +369,24 @@ window.addEventListener('message', (e) => {
   send({ type: 'downloadPdf', items });
 });
 
-// 一次“由你发起的 PDF 下载”开始的时间：你点「文献単位PDF」后确认框被继续（自动或手动）时记下
-let pdfFlowStarted = 0;
-document.addEventListener('click', (e) => {
-  if (e.isTrusted && e.target.closest?.(CFG.pdfConfirmSelector)) pdfFlowStarted = Date.now();   // 你自己点了「継続」
-}, true);
-
-// 确认框「文献単位PDFの出力には…」出现时自动点「継続」。只在你刚亲手点了「文献単位PDF」时才点；每个确认框只处理一次
+// 确认框「文献単位PDFの出力には…」出现时自动点「継続」（它只会在你点了「文献単位PDF」后出现）；每个确认框只点一次
 function autoContinuePdf() {
   if (!dl.autoClick) return;
   const dlg = document.querySelector(CFG.pdfConfirmSelector);
   if (!dlg || dlg.dataset.jppClicked) return;
-  dlg.dataset.jppClicked = '1';
-  if (Date.now() - lastUserAction > CFG.userActionWindowMs) {
-    LOG('PDF 确认框出现了，但你最近没有操作，不自动继续');
-    return;
-  }
   const btn = dlg.querySelector(CFG.pdfContinueSelector);
-  if (!btn) return;
-  pdfFlowStarted = Date.now();
+  if (!btn) return;                      // 按钮还没渲染出来，下一轮再看
+  dlg.dataset.jppClicked = '1';
   LOG('自动点「継続」');
   setTimeout(() => btn.click(), 150);   // 等对话框动画结束
 }
 
-// 「PDFダウンロード」出现时自动点。只在这次下载是你发起的时候才点；每个按钮只点一次
+// 「PDFダウンロード」出现时自动点；每个按钮只点一次
 function autoClickPdfLink() {
   if (!dl.autoClick) return;
   const link = document.querySelector(CFG.pdfLinkSelector);
   if (!link || link.dataset.jppClicked) return;
   link.dataset.jppClicked = '1';
-  const byUser = Date.now() - pdfFlowStarted < CFG.pdfFlowMs || Date.now() - lastUserAction < CFG.pdfClickWindowMs;
-  if (!byUser) {
-    LOG('「PDFダウンロード」出现了，但不是你刚发起的下载，不自动点');
-    return;
-  }
   LOG('自动点「PDFダウンロード」');
   link.click();
 }
