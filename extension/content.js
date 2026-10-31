@@ -1,6 +1,6 @@
 // J-PlatPat 验证码助手 —— 内容脚本
 //   识别：验证码出现后，用本地模型（model.js，纯 JS）识别并填进输入框；置信度低就换一张。
-//   自动提交：只有你亲手点了下载、弹出的验证码才会自动点 OK，判错就重新识别再提交，每个对话框最多 3 次。
+//   自动提交：只有你亲手操作后弹出的验证码才会自动点 OK（本页的操作，或点开本页的那一下），判错就重新识别再提交，每个对话框最多 3 次。
 //   PDF：「PDFダウンロード」出现时自动点；查看器窗口由 page_hook.js 拦下，改成直接下载文件。
 //   收集：记录你提交的值和结果（通过 / 输错），交给 background 保存图片并统计模型的实测准确率。
 //   可选“自动换图”：对话框已打开时，按随机间隔点“再描画”收集训练图片，到目标数量自动停止。
@@ -202,20 +202,52 @@ function ensureModel() {
 const fill = { hash: null, text: null, conf: 0, redraws: 0, busy: false };
 
 // ---------------- 自动提交 ----------------
-// 只有“你亲手点了下载”之后弹出的验证码才会自动点 OK：对话框出现前 15 秒内要有真实的鼠标/键盘操作（isTrusted）。
+// 只有“你亲手操作”之后弹出的验证码才会自动点 OK：对话框出现前 15 秒内要有真实的鼠标/键盘操作（isTrusted）。
 // 每个对话框最多自动提交 maxSubmit 次；插件自己从不点下载按钮。这样它只是省掉你输入和点 OK，没法被拿去挂脚本批量下载。
+//
+// 你的操作记两份：
+//   lastUserAction   本页面里的
+//   sharedUserAction 所有 J-PlatPat 页面共用（chrome.storage.local），只取“打开本页之前”的那一次。
+//                    在列表页点开文献（新标签页）、刷新、整页跳转后，新页面自己没有记录，验证码又是一打开就弹，
+//                    靠它才能认出是你触发的。本页打开之后别的标签页里的操作不算。
+const PAGE_START = performance.timeOrigin;   // 本页面开始加载的时间
 let lastUserAction = 0;
+let sharedUserAction = 0;
+let lastSharedWrite = 0;
 for (const t of ['click', 'keydown']) {
-  document.addEventListener(t, (e) => { if (e.isTrusted) lastUserAction = Date.now(); }, true);
+  document.addEventListener(t, (e) => {
+    if (!e.isTrusted) return;
+    const now = Date.now();
+    lastUserAction = now;
+    if (now - lastSharedWrite >= 1000) {     // 最多每秒写一次
+      lastSharedWrite = now;
+      try { chrome.storage.local.set({ lastUserAction: now }); } catch { /* 扩展已重新加载 */ }
+    }
+  }, true);
 }
+const takeShared = (t) => { if (t && t <= PAGE_START && t > sharedUserAction) sharedUserAction = t; };
+chrome.storage.local.get({ lastUserAction: 0 }, (v) => takeShared(v.lastUserAction));
+chrome.storage.onChanged.addListener((c) => { if (c.lastUserAction) takeShared(c.lastUserAction.newValue); });
+
+// ms 之内有没有你的操作：'page' 本页里的，'before' 打开本页之前的，null 没有
+function userActedWithin(ms) {
+  const now = Date.now();
+  if (now - lastUserAction < ms) return 'page';
+  if (now - sharedUserAction < ms) return 'before';
+  return null;
+}
+
 const session = { active: false, byUser: false, submits: 0 };  // 当前这个验证码对话框
 
 function startSessionIfNeeded() {
   if (session.active) return;
   session.active = true;
-  session.byUser = Date.now() - lastUserAction < CFG.userActionWindowMs;
+  const by = userActedWithin(CFG.userActionWindowMs);
+  session.byUser = !!by;
   session.submits = 0;
-  LOG(session.byUser ? '验证码对话框出现（由你的操作触发，可以自动提交）' : '验证码对话框出现（不是你刚操作触发的，只填入不提交）');
+  LOG(by === 'page' ? '验证码对话框出现（由你在本页的操作触发，可以自动提交）'
+    : by === 'before' ? '验证码对话框出现（由你打开本页的操作触发，可以自动提交）'
+    : '验证码对话框出现（15 秒内没有你的操作，只填入不提交）');
 }
 
 function endSession() {
@@ -225,8 +257,11 @@ function endSession() {
 }
 
 function autoSubmit(cap, h, p, info) {
-  const canAuto = recog.autoSubmit && session.byUser && !auto.on;
-  if (!canAuto) return false;
+  if (!recog.autoSubmit || auto.on) return false;
+  if (!session.byUser) {
+    showBadge(cap, `🤖 ${info}，确认无误后点 OK<br><span style="color:#777">15 秒内没检测到你的操作，所以没有自动提交</span>`, '#15803d');
+    return true;
+  }
   if (session.submits >= recog.maxSubmit) {
     showBadge(cap, `🤖 ${info}，<b>已自动提交 ${session.submits} 次仍未通过，请自己核对后点 OK</b>`, '#b91c1c');
     return true;
